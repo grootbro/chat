@@ -2215,6 +2215,113 @@ describe("removeReaction", () => {
   });
 });
 
+describe("thread starter message routing", () => {
+  const adapter = createDiscordAdapter({
+    botToken: "test-token",
+    publicKey: testPublicKey,
+    applicationId: "test-app-id",
+    logger: mockLogger,
+  });
+
+  it("routes text-channel starter operations to the parent channel", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(() =>
+      Promise.resolve(
+        Response.json({
+          id: "starter123",
+          channel_id: "channel456",
+          content: "updated",
+        })
+      )
+    );
+
+    try {
+      const threadId = "discord:guild1:channel456:starter123";
+      await adapter.editMessage(threadId, "starter123", "updated");
+      await adapter.deleteMessage(threadId, "starter123");
+      await adapter.addReaction(threadId, "starter123", "heart");
+      await adapter.removeReaction(threadId, "starter123", "heart");
+
+      expect(
+        fetchSpy.mock.calls
+          .filter(([input]) =>
+            String(input).startsWith("https://discord.com/api/v10/")
+          )
+          .map(([input, init]) => [String(input), init?.method])
+      ).toEqual([
+        [
+          "https://discord.com/api/v10/channels/channel456/messages/starter123",
+          "PATCH",
+        ],
+        [
+          "https://discord.com/api/v10/channels/channel456/messages/starter123",
+          "DELETE",
+        ],
+        [
+          "https://discord.com/api/v10/channels/channel456/messages/starter123/reactions/%E2%9D%A4%EF%B8%8F/@me",
+          "PUT",
+        ],
+        [
+          "https://discord.com/api/v10/channels/channel456/messages/starter123/reactions/%E2%9D%A4%EF%B8%8F/@me",
+          "DELETE",
+        ],
+      ]);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("retries a forum starter against the thread on unknown message", async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        Response.json(
+          { code: 10_008, message: "Unknown Message" },
+          { status: 404 }
+        )
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+
+    try {
+      await adapter.addReaction(
+        "discord:guild1:forum456:starter123",
+        "starter123",
+        "heart"
+      );
+
+      expect(fetchSpy.mock.calls.map(([input]) => String(input))).toEqual([
+        "https://discord.com/api/v10/channels/forum456/messages/starter123/reactions/%E2%9D%A4%EF%B8%8F/@me",
+        "https://discord.com/api/v10/channels/starter123/messages/starter123/reactions/%E2%9D%A4%EF%B8%8F/@me",
+      ]);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("does not retry other Discord errors", async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        Response.json(
+          { code: 50_013, message: "Missing Permissions" },
+          { status: 403 }
+        )
+      );
+
+    try {
+      await expect(
+        adapter.addReaction(
+          "discord:guild1:channel456:starter123",
+          "starter123",
+          "heart"
+        )
+      ).rejects.toThrow("50013");
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+});
+
 // ============================================================================
 // normalizeDiscordEmoji Tests
 // ============================================================================
