@@ -236,6 +236,16 @@ await adapter.sendTemplate(threadId, {
 
 Templates must be created and approved in [WhatsApp Manager](https://business.facebook.com/wa/manage/message-templates/) before they can be sent. Quick reply button taps on a template arrive as button responses and are dispatched to your `onAction` handlers.
 
+## User identity
+
+WhatsApp messages include a [business-scoped user ID](https://developers.facebook.com/documentation/business-messaging/whatsapp/business-scoped-user-ids/) in `from_user_id` and `contacts[].user_id`. Users with a username may omit the phone-based `from` and `wa_id` fields.
+
+The adapter accepts either identifier. When both are available, it preserves an existing phone-based thread ID and stores the BSUID as an alias. Replies include both `to` and `recipient`, with the phone number taking precedence according to Meta's API. BSUID-only threads send through `recipient`.
+
+Meta does not support BSUID recipients for one-tap, zero-tap, or copy-code authentication templates. Those templates require the user's phone number.
+
+Use a persistent state adapter in production so identity aliases survive restarts. The adapter also consumes `user_changed_number` and `user_changed_user_id` system messages to preserve the canonical thread when Meta rotates a BSUID. Current phone, BSUID, parent BSUID, and username fields remain available through `message.raw`.
+
 ## Thread ID format
 
 ```
@@ -243,6 +253,8 @@ whatsapp:{phoneNumberId}:{userWaId}
 ```
 
 Example: `whatsapp:1234567890:15551234567`
+
+The final segment is the adapter's canonical user identifier. It may contain a phone number, a BSUID such as `US.13491208655302741918`, or a previously observed identifier retained for thread continuity.
 
 ## Troubleshooting
 

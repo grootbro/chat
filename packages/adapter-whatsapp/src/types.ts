@@ -53,7 +53,7 @@ export interface WhatsAppAdapterConfig {
 export interface WhatsAppThreadId {
   /** Business phone number ID */
   phoneNumberId: string;
-  /** User's WhatsApp ID (their phone number) */
+  /** User routing identifier, which may be a phone number or BSUID */
   userWaId: string;
 }
 
@@ -105,8 +105,10 @@ export interface WhatsAppWebhookValue {
  * Contact information from an inbound message.
  */
 export interface WhatsAppContact {
-  profile: { name: string };
-  wa_id: string;
+  parent_user_id?: string;
+  profile: { name: string; username?: string };
+  user_id?: string;
+  wa_id?: string;
 }
 
 /**
@@ -168,7 +170,9 @@ export interface WhatsAppInboundMessage {
     sha256: string;
   };
   /** Sender's WhatsApp ID */
-  from: string;
+  from?: string;
+  from_parent_user_id?: string;
+  from_user_id?: string;
   /** Unique message ID */
   id: string;
   /** Image message content */
@@ -210,6 +214,15 @@ export interface WhatsAppInboundMessage {
     id: string;
     mime_type: string;
     sha256: string;
+  };
+  system?: {
+    body: string;
+    parent_user_id?: string;
+    previous_parent_user_id?: string;
+    previous_user_id?: string;
+    type: "user_changed_number" | "user_changed_user_id";
+    user_id: string;
+    wa_id?: string;
   };
   /** Text message content */
   text?: {
@@ -287,7 +300,9 @@ export interface WhatsAppStatus {
     category: string;
     pricing_model: string;
   };
-  recipient_id: string;
+  recipient_id?: string;
+  recipient_parent_user_id?: string;
+  recipient_user_id?: string;
   status: "sent" | "delivered" | "read" | "failed";
   timestamp: string;
 }
@@ -300,7 +315,7 @@ export interface WhatsAppStatus {
  * Response from sending a message via the Cloud API.
  */
 export interface WhatsAppSendResponse {
-  contacts: Array<{ input: string; wa_id: string }>;
+  contacts: Array<{ input: string; user_id?: string; wa_id?: string }>;
   messages: Array<{ id: string }>;
   messaging_product: "whatsapp";
 }
@@ -454,4 +469,5 @@ export interface WhatsAppRawMessage {
   message: WhatsAppInboundMessage;
   /** Phone number ID that received the message */
   phoneNumberId: string;
+  userId?: string;
 }

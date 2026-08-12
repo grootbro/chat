@@ -21,6 +21,11 @@ import {
   WhatsAppAdapter,
   type WhatsAppThreadId,
 } from "./index";
+import type {
+  WhatsAppContact,
+  WhatsAppInboundMessage,
+  WhatsAppWebhookPayload,
+} from "./types";
 
 const NOT_SUPPORTED_PATTERN = /not support/i;
 const ACCESS_TOKEN_PATTERN = /accessToken/i;
@@ -240,6 +245,41 @@ describe("parseMessage", () => {
     };
     const message = adapter.parseMessage(raw);
     expect(message.metadata.dateSent.getTime()).toBe(1700000000000);
+  });
+
+  it("preserves canonical identity when reparsing raw messages", () => {
+    const adapter = createTestAdapter();
+    const message = adapter.parseMessage({
+      message: {
+        id: "wamid.BSUID",
+        from_user_id: "US.13491208655302741918",
+        timestamp: "1700000000",
+        type: "text",
+        text: { body: "Hello" },
+      },
+      phoneNumberId: "123456789",
+      userId: "15551234567",
+    });
+
+    expect(message.threadId).toBe("whatsapp:123456789:15551234567");
+    expect(message.author.userId).toBe("15551234567");
+  });
+
+  it("parses BSUID-only raw messages without stored identity", () => {
+    const adapter = createTestAdapter();
+    const message = adapter.parseMessage({
+      message: {
+        id: "wamid.BSUID",
+        from_user_id: "US.13491208655302741918",
+        timestamp: "1700000000",
+        type: "text",
+        text: { body: "Hello" },
+      },
+      phoneNumberId: "123456789",
+    });
+
+    expect(message.threadId).toBe("whatsapp:123456789:US.13491208655302741918");
+    expect(message.author.userId).toBe("US.13491208655302741918");
   });
 });
 
@@ -601,6 +641,58 @@ function makeSignature(body: string, secret = "test-secret"): string {
   return `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
 }
 
+function webhook(payload: WhatsAppWebhookPayload): Request {
+  const body = JSON.stringify(payload);
+  return new Request("https://example.com/webhook", {
+    method: "POST",
+    headers: {
+      "x-hub-signature-256": makeSignature(body),
+      "content-type": "application/json",
+    },
+    body,
+  });
+}
+
+function inbound(
+  overrides: Partial<WhatsAppInboundMessage>
+): WhatsAppInboundMessage {
+  return {
+    id: "wamid.inbound",
+    timestamp: "1700000000",
+    type: "text",
+    text: { body: "Hello" },
+    ...overrides,
+  };
+}
+
+function notification(
+  messages: WhatsAppInboundMessage[],
+  contacts?: WhatsAppContact[]
+): WhatsAppWebhookPayload {
+  return {
+    object: "whatsapp_business_account",
+    entry: [
+      {
+        id: "waba",
+        changes: [
+          {
+            field: "messages",
+            value: {
+              messaging_product: "whatsapp",
+              metadata: {
+                display_phone_number: "15550000000",
+                phone_number_id: "123456789",
+              },
+              ...(contacts ? { contacts } : {}),
+              messages,
+            },
+          },
+        ],
+      },
+    ],
+  };
+}
+
 function makeWebhookPayload(overrides?: {
   field?: string;
   hasMessages?: boolean;
@@ -785,6 +877,263 @@ describe("handleWebhook - POST message processing", () => {
   });
 });
 
+describe("handleWebhook - business-scoped user IDs", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it.each([
+    {
+      name: "phone and BSUID",
+      contact: {
+        profile: { name: "User" },
+        wa_id: "15551234567",
+        user_id: "US.13491208655302741918",
+      },
+      message: {
+        from: "15551234567",
+        from_user_id: "US.13491208655302741918",
+      },
+      userId: "15551234567",
+    },
+    {
+      name: "username without phone",
+      contact: {
+        profile: { name: "User", username: "exampleuser" },
+        user_id: "US.13491208655302741918",
+      },
+      message: { from_user_id: "US.13491208655302741918" },
+      userId: "US.13491208655302741918",
+    },
+    {
+      name: "username with phone",
+      contact: {
+        profile: { name: "User", username: "exampleuser" },
+        wa_id: "15551234567",
+        user_id: "US.13491208655302741918",
+      },
+      message: {
+        from: "15551234567",
+        from_user_id: "US.13491208655302741918",
+      },
+      userId: "15551234567",
+    },
+    {
+      name: "parent BSUID",
+      contact: {
+        profile: { name: "User", username: "exampleuser" },
+        wa_id: "15551234567",
+        user_id: "US.13491208655302741918",
+        parent_user_id: "US.ENT.11815799212886844830",
+      },
+      message: {
+        from: "15551234567",
+        from_user_id: "US.13491208655302741918",
+        from_parent_user_id: "US.ENT.11815799212886844830",
+      },
+      userId: "15551234567",
+    },
+  ])("handles $name webhooks", async ({ contact, message, userId }) => {
+    const adapter = createTestAdapter();
+    const chat = createMockChatInstance();
+    await adapter.initialize(chat);
+
+    const response = await adapter.handleWebhook(
+      webhook(notification([inbound(message)], [contact]))
+    );
+
+    expect(response.status).toBe(200);
+    expect(chat.processMessage).toHaveBeenCalledOnce();
+    const [, threadId, parsed] = vi.mocked(chat.processMessage).mock.calls[0];
+    expect(threadId).toBe(`whatsapp:123456789:${userId}`);
+    expect(typeof parsed).not.toBe("function");
+    if (typeof parsed !== "function") {
+      expect(parsed.author.userId).toBe(userId);
+      expect(parsed.raw).toMatchObject({ contact, userId });
+    }
+  });
+
+  it("sends both known identifiers from a preserved phone thread", async () => {
+    const adapter = createTestAdapter();
+    const chat = createMockChatInstance();
+    await adapter.initialize(chat);
+    const fetchSpy = vi.spyOn(global, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ messages: [{ id: "wamid.reply" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+
+    await adapter.handleWebhook(
+      webhook(
+        notification(
+          [
+            inbound({
+              from: "15551234567",
+              from_user_id: "US.13491208655302741918",
+            }),
+          ],
+          [
+            {
+              profile: { name: "User" },
+              wa_id: "15551234567",
+              user_id: "US.13491208655302741918",
+            },
+          ]
+        )
+      )
+    );
+    await adapter.postMessage("whatsapp:123456789:15551234567", {
+      markdown: "Reply",
+    });
+
+    const body = JSON.parse(fetchSpy.mock.calls[0][1]?.body as string);
+    expect(body.to).toBe("15551234567");
+    expect(body.recipient).toBe("US.13491208655302741918");
+    fetchSpy.mockRestore();
+  });
+
+  it("preserves identity across BSUID rotation system messages", async () => {
+    const adapter = createTestAdapter();
+    const chat = createMockChatInstance();
+    await adapter.initialize(chat);
+
+    await adapter.handleWebhook(
+      webhook(
+        notification(
+          [inbound({ from: "15551234567", from_user_id: "US.OLD" })],
+          [
+            {
+              profile: { name: "User" },
+              wa_id: "15551234567",
+              user_id: "US.OLD",
+            },
+          ]
+        )
+      )
+    );
+    await adapter.handleWebhook(
+      webhook(
+        notification([
+          {
+            id: "wamid.system",
+            timestamp: "1700000001",
+            type: "system",
+            system: {
+              body: "User changed from US.OLD to US.NEW",
+              wa_id: "15557654321",
+              user_id: "US.NEW",
+              previous_user_id: "US.OLD",
+              type: "user_changed_number",
+            },
+          },
+        ])
+      )
+    );
+    await adapter.handleWebhook(
+      webhook(
+        notification(
+          [inbound({ from_user_id: "US.NEW" })],
+          [
+            {
+              profile: { name: "User", username: "exampleuser" },
+              user_id: "US.NEW",
+            },
+          ]
+        )
+      )
+    );
+
+    expect(chat.processMessage).toHaveBeenCalledTimes(2);
+    const [, threadId, parsed] = vi.mocked(chat.processMessage).mock.calls[1];
+    expect(threadId).toBe("whatsapp:123456789:15551234567");
+    expect(typeof parsed).not.toBe("function");
+    if (typeof parsed !== "function") {
+      expect(parsed.author.userId).toBe("15551234567");
+    }
+
+    const fetchSpy = vi.spyOn(global, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ messages: [{ id: "wamid.reply" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+    await adapter.postMessage("whatsapp:123456789:15551234567", {
+      markdown: "Reply",
+    });
+    const body = JSON.parse(fetchSpy.mock.calls[0][1]?.body as string);
+    expect(body.to).toBe("15557654321");
+    expect(body.recipient).toBe("US.NEW");
+    fetchSpy.mockRestore();
+  });
+
+  it("clears a stale phone route after a BSUID-only rotation", async () => {
+    const adapter = createTestAdapter();
+    const chat = createMockChatInstance();
+    await adapter.initialize(chat);
+
+    await adapter.handleWebhook(
+      webhook(
+        notification(
+          [inbound({ from: "15551234567", from_user_id: "US.OLD" })],
+          [
+            {
+              profile: { name: "User" },
+              wa_id: "15551234567",
+              user_id: "US.OLD",
+            },
+          ]
+        )
+      )
+    );
+    await adapter.handleWebhook(
+      webhook(
+        notification([
+          {
+            id: "wamid.system",
+            timestamp: "1700000001",
+            type: "system",
+            system: {
+              body: "User changed from US.OLD to US.NEW",
+              user_id: "US.NEW",
+              previous_user_id: "US.OLD",
+              type: "user_changed_user_id",
+            },
+          },
+        ])
+      )
+    );
+
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ messages: [{ id: "wamid.reply" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+    await adapter.postMessage("whatsapp:123456789:15551234567", {
+      markdown: "Reply",
+    });
+
+    const body = JSON.parse(fetchSpy.mock.calls[0][1]?.body as string);
+    expect(body.recipient).toBe("US.NEW");
+    expect(body).not.toHaveProperty("to");
+    fetchSpy.mockRestore();
+  });
+
+  it("ignores messages without a phone number or BSUID", async () => {
+    const adapter = createTestAdapter();
+    const chat = createMockChatInstance();
+    await adapter.initialize(chat);
+
+    const response = await adapter.handleWebhook(
+      webhook(notification([inbound({})]))
+    );
+
+    expect(response.status).toBe(200);
+    expect(chat).not.toHaveDispatched("processMessage");
+  });
+});
+
 // ---------------------------------------------------------------------------
 // postMessage
 // ---------------------------------------------------------------------------
@@ -823,6 +1172,20 @@ describe("postMessage", () => {
     expect(result.id).toBe("wamid.sent123");
   });
 
+  it.each([
+    "US.13491208655302741918",
+    "US.ENT.11815799212886844830",
+  ])("sends %s threads through recipient without to", async (userId) => {
+    const adapter = createTestAdapter();
+    await adapter.postMessage(`whatsapp:123456789:${userId}`, {
+      markdown: "Hello there",
+    });
+
+    const sent = JSON.parse(fetchSpy.mock.calls[0][1]?.body as string);
+    expect(sent.recipient).toBe(userId);
+    expect(sent).not.toHaveProperty("to");
+  });
+
   it("long message splits and sends multiple requests", async () => {
     const adapter = createTestAdapter();
     const longText = "a".repeat(5000);
@@ -831,6 +1194,27 @@ describe("postMessage", () => {
     });
 
     expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("sends interactive messages to BSUID recipients", async () => {
+    const adapter = createTestAdapter();
+    await adapter.postMessage("whatsapp:123456789:US.13491208655302741918", {
+      card: {
+        type: "card",
+        title: "Choose",
+        children: [
+          {
+            type: "actions",
+            children: [{ type: "button", id: "yes", label: "Yes" }],
+          },
+        ],
+      },
+    });
+
+    const sent = JSON.parse(fetchSpy.mock.calls[0][1]?.body as string);
+    expect(sent.type).toBe("interactive");
+    expect(sent.recipient).toBe("US.13491208655302741918");
+    expect(sent).not.toHaveProperty("to");
   });
 });
 
@@ -942,6 +1326,23 @@ describe("postMessage - file uploads", () => {
     const sent = parseMessageBody(0);
     expect(sent.type).toBe("image");
     expect((sent.image as { id: string }).id).toBe("media-1");
+  });
+
+  it("sends media to BSUID recipients", async () => {
+    const adapter = createTestAdapter();
+    await adapter.postMessage("whatsapp:123456789:US.13491208655302741918", {
+      files: [
+        {
+          data: Buffer.from("jpeg"),
+          filename: "photo.jpg",
+          mimeType: "image/jpeg",
+        },
+      ],
+    });
+
+    const sent = parseMessageBody(0);
+    expect(sent.recipient).toBe("US.13491208655302741918");
+    expect(sent).not.toHaveProperty("to");
   });
 
   it("audio with text sends leading text message without audio caption", async () => {
@@ -1596,6 +1997,18 @@ describe("sendTemplate", () => {
     expect(sent.template.components[0].parameters[0].text).toBe("Ada");
   });
 
+  it("sends templates to BSUID recipients", async () => {
+    const adapter = createTestAdapter();
+    await adapter.sendTemplate("whatsapp:123456789:US.13491208655302741918", {
+      name: "order_shipped",
+      language: "en_US",
+    });
+
+    const sent = JSON.parse(fetchSpy.mock.calls[0][1]?.body as string);
+    expect(sent.recipient).toBe("US.13491208655302741918");
+    expect(sent).not.toHaveProperty("to");
+  });
+
   it("converts emoji placeholders in text parameters", async () => {
     const adapter = createTestAdapter();
     await adapter.sendTemplate("whatsapp:123456789:15551234567", {
@@ -1759,7 +2172,7 @@ describe("addReaction / removeReaction", () => {
   it("removeReaction sends reaction with empty emoji", async () => {
     const adapter = createTestAdapter();
     await adapter.removeReaction(
-      "whatsapp:123456789:15551234567",
+      "whatsapp:123456789:US.13491208655302741918",
       "wamid.msg1",
       "👍"
     );
@@ -1768,6 +2181,8 @@ describe("addReaction / removeReaction", () => {
     const body = JSON.parse(fetchSpy.mock.calls[0][1]?.body as string);
     expect(body.type).toBe("reaction");
     expect(body.reaction.emoji).toBe("");
+    expect(body.recipient).toBe("US.13491208655302741918");
+    expect(body).not.toHaveProperty("to");
   });
 });
 
@@ -2078,7 +2493,18 @@ describe("subclass extensibility", () => {
           this.verifySignature,
         ] as const;
       }
+
+      checkMethods(message: WhatsAppInboundMessage) {
+        return [
+          () => this.handleInboundMessage(message, undefined, "123"),
+          () => this.handleReaction(message, undefined, "123"),
+          () => this.handleInteractiveReply(message, undefined, "123"),
+          () => this.handleButtonResponse(message, undefined, "123"),
+          () => this.buildMessage(message, undefined, "thread", "text", "123"),
+        ];
+      }
     }
     expect(TestSubclass.prototype.checkAccess).toBeInstanceOf(Function);
+    expect(TestSubclass.prototype.checkMethods).toBeInstanceOf(Function);
   });
 });
