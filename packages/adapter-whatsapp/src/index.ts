@@ -742,13 +742,14 @@ export class WhatsAppAdapter
     const { bsuid, parent, phone, userId: fallback } = identity;
     const previous = inbound.system?.previous_user_id;
     const prior = inbound.system?.previous_parent_user_id;
+    const source = inbound.type === "system" ? inbound.from : undefined;
 
     if (!this.chat) {
       return { bsuid, parent, phone, userId: fallback };
     }
 
     const state = this.chat.getState();
-    const identifiers = [previous, prior, bsuid, parent, phone].filter(
+    const identifiers = [previous, prior, source, bsuid, parent, phone].filter(
       (value): value is string => Boolean(value)
     );
 

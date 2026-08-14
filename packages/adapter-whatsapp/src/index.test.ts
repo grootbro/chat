@@ -1067,6 +1067,45 @@ describe("handleWebhook - business-scoped user IDs", () => {
     fetchSpy.mockRestore();
   });
 
+  it("preserves identity across number change system messages", async () => {
+    const adapter = createTestAdapter();
+    const chat = createMockChatInstance();
+    await adapter.initialize(chat);
+
+    await adapter.handleWebhook(
+      webhook(
+        notification([inbound({ from: "15551234567", from_user_id: "US.OLD" })])
+      )
+    );
+    await adapter.handleWebhook(
+      webhook(
+        notification([
+          {
+            from: "15551234567",
+            id: "wamid.system",
+            timestamp: "1700000001",
+            type: "system",
+            system: {
+              body: "User changed from 15551234567 to 15557654321",
+              type: "user_changed_number",
+              user_id: "US.NEW",
+              wa_id: "15557654321",
+            },
+          },
+        ])
+      )
+    );
+    await adapter.handleWebhook(
+      webhook(
+        notification([inbound({ from: "15557654321", from_user_id: "US.NEW" })])
+      )
+    );
+
+    expect(chat.processMessage).toHaveBeenCalledTimes(2);
+    const [, threadId] = vi.mocked(chat.processMessage).mock.calls[1];
+    expect(threadId).toBe("whatsapp:123456789:15551234567");
+  });
+
   it("clears a stale phone route after a BSUID-only rotation", async () => {
     const adapter = createTestAdapter();
     const chat = createMockChatInstance();
