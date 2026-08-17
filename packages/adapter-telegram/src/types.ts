@@ -454,6 +454,13 @@ export interface TelegramRichMessage {
  * @see https://core.telegram.org/bots/api#message
  */
 export interface TelegramMessage {
+  animation?: TelegramFile & {
+    duration?: number;
+    width?: number;
+    height?: number;
+    mime_type?: string;
+    file_name?: string;
+  };
   audio?: TelegramFile & {
     duration?: number;
     performer?: string;
@@ -476,7 +483,13 @@ export interface TelegramMessage {
   reply_to_message?: TelegramMessage;
   rich_message?: TelegramRichMessage;
   sender_chat?: TelegramChat;
-  sticker?: TelegramFile & { emoji?: string };
+  sticker?: TelegramFile & {
+    emoji?: string;
+    width?: number;
+    height?: number;
+    is_animated?: boolean;
+    is_video?: boolean;
+  };
   text?: string;
   video?: TelegramVideo;
   video_note?: TelegramFile & { length?: number; duration?: number };
