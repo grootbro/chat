@@ -324,6 +324,80 @@ export function applyTelegramEntities(
 }
 
 /**
+ * Describe the message kinds Telegram sends with no text and no file:
+ * locations, venues, shared contacts, polls and dice.
+ *
+ * Without this they arrive as an empty message — the content is there in the
+ * payload, but a handler reading `text` sees nothing and cannot tell an empty
+ * delivery from a shared location. The wording stays short and literal; the
+ * structured payload is still on `raw` for anyone who needs the numbers.
+ */
+function describeNonFileContent(raw: TelegramMessage): string | undefined {
+  // Telegram sets `location` alongside `venue` for backward compatibility,
+  // so the venue check has to come first or every venue renders as bare
+  // coordinates.
+  if (raw.venue) {
+    return `📍 ${raw.venue.title}, ${raw.venue.address}`;
+  }
+  if (raw.location) {
+    return `📍 ${raw.location.latitude}, ${raw.location.longitude}`;
+  }
+  if (raw.contact) {
+    const name = [raw.contact.first_name, raw.contact.last_name]
+      .filter(Boolean)
+      .join(" ");
+    return `👤 ${name} ${raw.contact.phone_number}`.trim();
+  }
+  if (raw.poll) {
+    return `📊 ${raw.poll.question}`;
+  }
+  if (raw.dice) {
+    return `${raw.dice.emoji} ${raw.dice.value}`;
+  }
+  if (raw.game) {
+    return `🎮 ${raw.game.title}`;
+  }
+  if (raw.invoice) {
+    const amount = formatInvoiceAmount(
+      raw.invoice.total_amount,
+      raw.invoice.currency
+    );
+    return `🧾 ${raw.invoice.title} — ${amount} ${raw.invoice.currency}`;
+  }
+  if (raw.story) {
+    return "📖 Story";
+  }
+  return undefined;
+}
+
+// An invoice's total_amount is in the currency's smallest unit, and the
+// exponent varies per currency: Telegram's own list
+// (https://core.telegram.org/bots/payments/currencies.json) has these seven
+// at 0 and three at 3, with everything else at 2. XTR (Telegram Stars) is
+// not in that list and counts whole Stars.
+const ZERO_EXPONENT_CURRENCIES = new Set([
+  "CLP",
+  "ISK",
+  "JPY",
+  "KRW",
+  "PYG",
+  "UGX",
+  "VND",
+  "XTR",
+]);
+const THREE_EXPONENT_CURRENCIES = new Set(["BHD", "IQD", "JOD"]);
+
+function formatInvoiceAmount(totalAmount: number, currency: string): string {
+  let exponent = 2;
+  if (ZERO_EXPONENT_CURRENCIES.has(currency)) {
+    exponent = 0;
+  } else if (THREE_EXPONENT_CURRENCIES.has(currency)) {
+    exponent = 3;
+  }
+  return (totalAmount / 10 ** exponent).toFixed(exponent);
+}
+
+/**
  * Sticker formats: a still sticker is WebP, a video sticker WebM, and an
  * animated (Lottie) one the TGS container. The attachment type has to follow
  * the real format — a WebM typed "image" gets routed through sendPhoto by
@@ -2226,6 +2300,7 @@ export class TelegramAdapter
       (raw.sticker
         ? (raw.sticker.emoji ?? raw.sticker.set_name ?? "sticker")
         : undefined) ??
+      describeNonFileContent(raw) ??
       (raw.rich_message ? richMessageToText(raw.rich_message) : "");
     const entities = raw.entities ?? raw.caption_entities ?? [];
     const text = content?.text
