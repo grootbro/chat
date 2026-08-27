@@ -9,6 +9,7 @@ tagline: Connect to Telegram with support for groups, channels, inline keyboards
 beta: true
 features:
   postMessage: yes
+  messageReplies: yes
   editMessage: yes
   deleteMessage: yes
   fileUploads: yes
@@ -263,6 +264,7 @@ Pass `{ raw: "..." }` only if you need to ship a fully pre-escaped MarkdownV2 st
 - Multiple `files` or compatible `attachments` are sent as Telegram media groups. `files` upload as documents; `attachments` preserve image, audio, video, or file media type.
 - Incoming media groups are delivered as one message after the album settles, with attachments ordered by Telegram message ID and the shared caption preserved.
 - Other rich card elements (images, select menus, radios) render as fallback text.
+- `Thread.reply()` threads with Bot API `reply_parameters` and sets `allow_sending_without_reply`, so a reply whose target was deleted, never existed, or lives in another forum topic is delivered unthreaded instead of failing. Only the chat half of a composite target id is validated up front.
 
 ## Feature support
 

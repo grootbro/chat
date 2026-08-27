@@ -5867,7 +5867,12 @@ describe("reply", () => {
     });
   }
 
-  it("threads a text message to its target", async () => {
+  const expectedReplyParameters = {
+    message_id: 7,
+    allow_sending_without_reply: true,
+  };
+
+  it("threads a rich text message to its target", async () => {
     mockFetch
       .mockResolvedValueOnce(
         telegramOk({ id: 1, is_bot: true, username: "mybot" })
@@ -5879,13 +5884,160 @@ describe("reply", () => {
 
     await adapter.reply("telegram:123", "123:7", { markdown: "hello" });
 
+    expect(String(mockFetch.mock.calls[1]?.[0])).toContain("/sendRichMessage");
     const body = JSON.parse(
       String((mockFetch.mock.calls[1]?.[1] as RequestInit).body)
     );
-    expect(body.reply_parameters).toEqual({
-      message_id: 7,
-      allow_sending_without_reply: true,
+    expect(body.reply_parameters).toEqual(expectedReplyParameters);
+  });
+
+  it("threads a plain string message through sendMessage", async () => {
+    mockFetch
+      .mockResolvedValueOnce(
+        telegramOk({ id: 1, is_bot: true, username: "mybot" })
+      )
+      .mockResolvedValueOnce(telegramOk(sampleMessage({ message_id: 11 })));
+
+    const adapter = createReplyAdapter();
+    await adapter.initialize(createMockChat());
+
+    await adapter.reply("telegram:123", "123:7", "hello");
+
+    expect(String(mockFetch.mock.calls[1]?.[0])).toContain("/sendMessage");
+    const body = JSON.parse(
+      String((mockFetch.mock.calls[1]?.[1] as RequestInit).body)
+    );
+    expect(body.reply_parameters).toEqual(expectedReplyParameters);
+  });
+
+  it("threads a document upload to its target", async () => {
+    mockFetch
+      .mockResolvedValueOnce(
+        telegramOk({ id: 1, is_bot: true, username: "mybot" })
+      )
+      .mockResolvedValueOnce(telegramOk(sampleMessage({ message_id: 11 })));
+
+    const adapter = createReplyAdapter();
+    await adapter.initialize(createMockChat());
+
+    await adapter.reply("telegram:123", "123:7", {
+      raw: "",
+      files: [{ data: Buffer.from("doc"), filename: "doc.txt" }],
     });
+
+    expect(String(mockFetch.mock.calls[1]?.[0])).toContain("/sendDocument");
+    expect(readFormData(1).get("reply_parameters")).toBe(
+      JSON.stringify(expectedReplyParameters)
+    );
+  });
+
+  it("threads a URL attachment without an inline keyboard", async () => {
+    mockFetch
+      .mockResolvedValueOnce(
+        telegramOk({ id: 1, is_bot: true, username: "mybot" })
+      )
+      .mockResolvedValueOnce(telegramOk(sampleMessage({ message_id: 11 })));
+
+    const adapter = createReplyAdapter();
+    await adapter.initialize(createMockChat());
+
+    await adapter.reply("telegram:123", "123:7", {
+      markdown: "picture",
+      attachments: [
+        {
+          mimeType: "image/png",
+          name: "pic.png",
+          type: "image",
+          url: "https://cdn.example.com/pic.png",
+        },
+      ],
+    });
+
+    expect(String(mockFetch.mock.calls[1]?.[0])).toContain("/sendPhoto");
+    const body = JSON.parse(
+      String((mockFetch.mock.calls[1]?.[1] as RequestInit).body)
+    );
+    expect(body.reply_parameters).toEqual(expectedReplyParameters);
+  });
+
+  it("threads a buffer attachment to its target", async () => {
+    mockFetch
+      .mockResolvedValueOnce(
+        telegramOk({ id: 1, is_bot: true, username: "mybot" })
+      )
+      .mockResolvedValueOnce(telegramOk(sampleMessage({ message_id: 11 })));
+
+    const adapter = createReplyAdapter();
+    await adapter.initialize(createMockChat());
+
+    await adapter.reply("telegram:123", "123:7", {
+      markdown: "picture",
+      attachments: [
+        {
+          data: Buffer.from("payload"),
+          mimeType: "image/png",
+          name: "pic.png",
+          type: "image",
+        },
+      ],
+    });
+
+    expect(String(mockFetch.mock.calls[1]?.[0])).toContain("/sendPhoto");
+    expect(readFormData(1).get("reply_parameters")).toBe(
+      JSON.stringify(expectedReplyParameters)
+    );
+  });
+
+  it("threads a media group to its target", async () => {
+    mockFetch
+      .mockResolvedValueOnce(
+        telegramOk({ id: 1, is_bot: true, username: "mybot" })
+      )
+      .mockResolvedValueOnce(
+        telegramOk([
+          sampleMessage({ message_id: 11 }),
+          sampleMessage({ message_id: 12 }),
+        ])
+      );
+
+    const adapter = createReplyAdapter();
+    await adapter.initialize(createMockChat());
+
+    await adapter.reply("telegram:123", "123:7", {
+      markdown: "album",
+      attachments: [
+        { data: Buffer.from("one"), name: "one.png", type: "image" },
+        { data: Buffer.from("two"), name: "two.png", type: "image" },
+      ],
+    });
+
+    expect(String(mockFetch.mock.calls[1]?.[0])).toContain("/sendMediaGroup");
+    expect(readFormData(1).get("reply_parameters")).toBe(
+      JSON.stringify(expectedReplyParameters)
+    );
+  });
+
+  it("falls back to a regular send when the rich endpoint rejects reply_parameters", async () => {
+    mockFetch
+      .mockResolvedValueOnce(
+        telegramOk({ id: 1, is_bot: true, username: "mybot" })
+      )
+      .mockResolvedValueOnce(
+        telegramError(400, 400, "Bad Request: unknown field reply_parameters")
+      )
+      .mockResolvedValueOnce(telegramOk(sampleMessage({ message_id: 11 })));
+
+    const adapter = createReplyAdapter();
+    await adapter.initialize(createMockChat());
+
+    await adapter.reply("telegram:123", "123:7", { markdown: "hello" });
+
+    expect(String(mockFetch.mock.calls[1]?.[0])).toContain("/sendRichMessage");
+    expect(String(mockFetch.mock.calls[2]?.[0])).toContain("/sendMessage");
+    const body = JSON.parse(
+      String((mockFetch.mock.calls[2]?.[1] as RequestInit).body)
+    );
+    expect(body.reply_parameters).toEqual(expectedReplyParameters);
   });
 
   it("leaves a plain postMessage unthreaded", async () => {
@@ -5917,5 +6069,22 @@ describe("reply", () => {
     await expect(
       adapter.reply("telegram:123", "999:7", { markdown: "hello" })
     ).rejects.toThrow("chat mismatch");
+  });
+
+  it.each([
+    "7abc",
+    "7.9",
+    " 7",
+  ])("rejects the malformed bare message id %j", async (target) => {
+    mockFetch.mockResolvedValueOnce(
+      telegramOk({ id: 1, is_bot: true, username: "mybot" })
+    );
+
+    const adapter = createReplyAdapter();
+    await adapter.initialize(createMockChat());
+
+    await expect(
+      adapter.reply("telegram:123", target, { markdown: "hello" })
+    ).rejects.toThrow("Invalid Telegram message ID");
   });
 });
