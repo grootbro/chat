@@ -6257,6 +6257,9 @@ describe("mentionOnReply", () => {
   async function deliverReply(options: {
     mentionOnReply?: boolean;
     replyFromBot: boolean;
+    fromBot?: boolean;
+    messageThreadId?: number;
+    replyToMessageId?: number;
   }) {
     mockFetch.mockResolvedValue(
       telegramOk({
@@ -6291,8 +6294,21 @@ describe("mentionOnReply", () => {
           message: sampleMessage({
             chat: { id: -100123, type: "supergroup", title: "General" },
             text: "and the second one?",
+            ...(options.messageThreadId === undefined
+              ? {}
+              : { message_thread_id: options.messageThreadId }),
+            ...(options.fromBot
+              ? {
+                  from: {
+                    id: BOT_USER_ID,
+                    is_bot: true,
+                    first_name: "Bot",
+                    username: "mybot",
+                  },
+                }
+              : {}),
             reply_to_message: sampleMessage({
-              message_id: 5,
+              message_id: options.replyToMessageId ?? 5,
               chat: { id: -100123, type: "supergroup", title: "General" },
               from: options.replyFromBot
                 ? {
@@ -6339,5 +6355,140 @@ describe("mentionOnReply", () => {
   it("stays off by default so existing bots keep mention-only behaviour", async () => {
     const parsed = await deliverReply({ replyFromBot: true });
     expect(parsed?.isMention).toBe(false);
+  });
+
+  it("ignores a forum topic's implicit reply to the bot's topic-creation message", async () => {
+    // In forum topics every message carries reply_to_message pointing at the
+    // topic-creation service message, whose message_id equals
+    // message_thread_id. When the bot created the topic that must not turn
+    // every message in the topic into a mention.
+    const parsed = await deliverReply({
+      mentionOnReply: true,
+      replyFromBot: true,
+      messageThreadId: 5,
+      replyToMessageId: 5,
+    });
+    expect(parsed?.isMention).toBe(false);
+  });
+
+  it("counts an explicit reply to the bot inside a forum topic", async () => {
+    const parsed = await deliverReply({
+      mentionOnReply: true,
+      replyFromBot: true,
+      messageThreadId: 5,
+      replyToMessageId: 42,
+    });
+    expect(parsed?.isMention).toBe(true);
+  });
+
+  it("does not flag the bot's own reply to one of its messages", async () => {
+    // The Bot API echoes outbound sends back; the echoed message replies to
+    // the bot's earlier message but is authored by the bot itself, and must
+    // not be parsed (and cached) as a mention.
+    const parsed = await deliverReply({
+      mentionOnReply: true,
+      replyFromBot: true,
+      fromBot: true,
+    });
+    expect(parsed?.isMention).toBe(false);
+  });
+
+  it("recovers bot identity while polling after a failed startup getMe", async () => {
+    // Without a lazy retry, a transient getMe outage at cold start leaves
+    // _botUserId unset for the process lifetime and mentionOnReply silently
+    // never fires in polling mode.
+    let getMeCalls = 0;
+    let getUpdatesCalls = 0;
+    mockFetch.mockImplementation((input, init) => {
+      const url = String(input);
+      if (url.includes("/getMe")) {
+        getMeCalls += 1;
+        if (getMeCalls === 1) {
+          return Promise.reject(new Error("getMe outage"));
+        }
+        return Promise.resolve(
+          telegramOk({
+            id: BOT_USER_ID,
+            is_bot: true,
+            first_name: "Bot",
+            username: "mybot",
+          })
+        );
+      }
+      if (url.includes("/getUpdates")) {
+        getUpdatesCalls += 1;
+        if (getUpdatesCalls === 1) {
+          return Promise.resolve(
+            telegramOk([
+              {
+                update_id: 10,
+                message: sampleMessage({
+                  chat: { id: -100123, type: "supergroup", title: "General" },
+                  text: "and the second one?",
+                  reply_to_message: sampleMessage({
+                    message_id: 5,
+                    chat: {
+                      id: -100123,
+                      type: "supergroup",
+                      title: "General",
+                    },
+                    from: {
+                      id: BOT_USER_ID,
+                      is_bot: true,
+                      first_name: "Bot",
+                      username: "mybot",
+                    },
+                  }),
+                }),
+              },
+            ])
+          );
+        }
+        return new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal;
+          if (signal?.aborted) {
+            reject(createAbortError());
+            return;
+          }
+          signal?.addEventListener(
+            "abort",
+            () => {
+              reject(createAbortError());
+            },
+            { once: true }
+          );
+        });
+      }
+      return Promise.resolve(telegramOk(true));
+    });
+
+    const adapter = createTelegramAdapter({
+      botToken: "token",
+      mode: "webhook",
+      logger: mockLogger,
+      userName: "mybot",
+      mentionOnReply: true,
+    });
+    const chat = createMockChat();
+
+    await adapter.initialize(chat);
+    expect(adapter.botUserId).toBeUndefined();
+
+    await adapter.startPolling({
+      limit: 1,
+      timeout: 1,
+      allowedUpdates: ["message"],
+      retryDelayMs: 0,
+    });
+    const processMessage = chat.processMessage as ReturnType<typeof vi.fn>;
+    await waitForCondition(() => processMessage.mock.calls.length > 0);
+    await adapter.stopPolling();
+
+    expect(getMeCalls).toBe(2);
+    expect(adapter.botUserId).toBe(String(BOT_USER_ID));
+    const parsed = processMessage.mock.calls[0]?.[2] as
+      | { isMention?: boolean }
+      | undefined;
+    expect(parsed?.isMention).toBe(true);
   });
 });

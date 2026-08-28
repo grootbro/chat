@@ -29,7 +29,7 @@ Visit the [adapters directory](https://chat-sdk.dev/adapters) to see other avail
 
 ## Usage
 
-The adapter auto-detects `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET_TOKEN`, `TELEGRAM_ALLOW_UNVERIFIED_WEBHOOKS`, `TELEGRAM_BOT_USERNAME`, and `TELEGRAM_API_BASE_URL` from environment variables:
+The adapter auto-detects `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET_TOKEN`, `TELEGRAM_ALLOW_UNVERIFIED_WEBHOOKS`, `TELEGRAM_BOT_USERNAME`, `TELEGRAM_MENTION_ON_REPLY`, and `TELEGRAM_API_BASE_URL` from environment variables:
 
 ```typescript
 import { Chat } from "chat";
@@ -162,6 +162,7 @@ Most options are auto-detected from environment variables when not provided. `na
 | `mode` | No | Adapter mode: `auto` (default), `webhook`, or `polling` |
 | `longPolling` | No | Optional long polling config for `getUpdates` (`timeout`, `limit`, `allowedUpdates`, `deleteWebhook`, `dropPendingUpdates`, `retryDelayMs`) |
 | `userName` | No | Bot username used for mention detection. Auto-detected from `TELEGRAM_BOT_USERNAME` or `getMe` |
+| `mentionOnReply` | No | Treat a reply to one of the bot's own messages as a mention, so it routes to `onNewMention`. Defaults to `false`. Auto-detected from `TELEGRAM_MENTION_ON_REPLY=true`. Implicit forum-topic replies and the bot's own messages never count |
 | `nativeStreaming` | No | Stream with Telegram's native draft previews in private chats. Defaults to `false`, which uses post-and-edit in every chat type |
 | `streamingEditIntervalMs` | No | Minimum interval between edits on the post-and-edit streaming path. Defaults to `1100` in private chats and `3100` in other chats, and acts as a floor for the Chat-level `streamingUpdateIntervalMs` |
 | `apiUrl` | No | Telegram API base URL. Auto-detected from `TELEGRAM_API_BASE_URL`. Use `apiUrl` for cross-adapter consistency; the legacy `apiBaseUrl` alias is still accepted |
@@ -176,6 +177,8 @@ TELEGRAM_ALLOWED_USER_IDS=123456789,987654321
 TELEGRAM_BOT_TOKEN=123456:ABCDEF...
 TELEGRAM_WEBHOOK_SECRET_TOKEN=your-webhook-secret
 TELEGRAM_BOT_USERNAME=mybot
+# Optional (treat replies to the bot as mentions)
+TELEGRAM_MENTION_ON_REPLY=true
 # Optional (self-hosted API gateway)
 TELEGRAM_API_BASE_URL=https://api.telegram.org
 ```

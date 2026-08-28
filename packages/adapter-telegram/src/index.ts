@@ -3101,11 +3101,21 @@ export class TelegramAdapter
     // @mention does — it is how Telegram users continue a conversation without
     // repeating the handle. Opt-in, and checked before the empty-text guard so
     // a reply carrying only a photo or a document still counts.
+    //
+    // Two payload shapes look like a reply to the bot but are not one:
+    // - In forum topics every message carries reply_to_message pointing at the
+    //   topic-creation service message (its message_id equals
+    //   message_thread_id), authored by whoever created the topic — the bot,
+    //   when it did. Only an explicit reply to a different message counts.
+    // - The Bot API echoes the bot's own outbound replies back in send
+    //   responses; the bot replying to itself is not a user addressing it.
     if (
       this.mentionOnReply &&
       this._botUserId &&
       message.reply_to_message?.from &&
-      String(message.reply_to_message.from.id) === this._botUserId
+      String(message.reply_to_message.from.id) === this._botUserId &&
+      message.reply_to_message.message_id !== message.message_thread_id &&
+      !(message.from && String(message.from.id) === this._botUserId)
     ) {
       return true;
     }
@@ -3420,6 +3430,21 @@ export class TelegramAdapter
         );
 
         consecutiveFailures = 0;
+
+        // A failed startup getMe leaves _botUserId unset, which silently
+        // disables identity-based checks (text_mention, mentionOnReply).
+        // Webhook mode retries lazily per update; do the same here now that a
+        // successful getUpdates proves the API is reachable again.
+        if (updates.length > 0 && !this.webhookScope) {
+          try {
+            await this.ensureBotIdentity();
+          } catch (error) {
+            this.logger.warn(
+              "Telegram polling could not resolve bot identity",
+              { error: String(error) }
+            );
+          }
+        }
 
         for (const update of updates) {
           offset = update.update_id + 1;

@@ -68,7 +68,7 @@ features:
 ## Quick start
 
 <Callout type="info">
-The adapter auto-detects `TELEGRAM_ALLOWED_USER_IDS`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET_TOKEN`, `TELEGRAM_ALLOW_UNVERIFIED_WEBHOOKS`, and `TELEGRAM_BOT_USERNAME` from the environment.
+The adapter auto-detects `TELEGRAM_ALLOWED_USER_IDS`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET_TOKEN`, `TELEGRAM_ALLOW_UNVERIFIED_WEBHOOKS`, `TELEGRAM_BOT_USERNAME`, and `TELEGRAM_MENTION_ON_REPLY` from the environment.
 </Callout>
 
 ```typescript title="lib/bot.ts" lineNumbers
@@ -162,6 +162,12 @@ const telegram = createTelegramAdapter({
       type: "LongPollingOptions",
       description:
         "Long polling tuning. Fields: `timeout`, `limit`, `allowedUpdates`, `deleteWebhook`, `dropPendingUpdates`, `retryDelayMs`.",
+    },
+    mentionOnReply: {
+      type: "boolean",
+      default: "false",
+      description:
+        "Treat a reply to one of the bot's own messages as a mention, so it routes to `onNewMention`. Telegram users usually continue a conversation by replying instead of repeating `@name`. Auto-detected from `TELEGRAM_MENTION_ON_REPLY=true`. Implicit forum-topic replies and the bot's own messages never count.",
     },
     userName: {
       type: "string",
