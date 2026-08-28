@@ -485,6 +485,7 @@ export interface TelegramMessage {
   sender_chat?: TelegramChat;
   sticker?: TelegramFile & {
     emoji?: string;
+    set_name?: string;
     width?: number;
     height?: number;
     is_animated?: boolean;

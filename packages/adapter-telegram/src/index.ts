@@ -325,19 +325,21 @@ export function applyTelegramEntities(
 
 /**
  * Sticker formats: a still sticker is WebP, a video sticker WebM, and an
- * animated (Lottie) one the TGS container.
+ * animated (Lottie) one the TGS container. The attachment type has to follow
+ * the real format — a WebM typed "image" gets routed through sendPhoto by
+ * type-driven consumers, which Telegram rejects.
  */
-function stickerMimeType(sticker: {
+function stickerAttachmentFormat(sticker: {
   is_animated?: boolean;
   is_video?: boolean;
-}): string {
+}): { type: Attachment["type"]; mimeType: string } {
   if (sticker.is_video) {
-    return "video/webm";
+    return { type: "video", mimeType: "video/webm" };
   }
   if (sticker.is_animated) {
-    return "application/x-tgsticker";
+    return { type: "file", mimeType: "application/x-tgsticker" };
   }
-  return "image/webp";
+  return { type: "image", mimeType: "image/webp" };
 }
 
 export class TelegramAdapter
@@ -2219,8 +2221,11 @@ export class TelegramAdapter
       raw.caption ??
       // A sticker carries no text, only the emoji it stands for. Without this
       // a sticker reaches the handler as an empty message and looks like a
-      // delivery that lost its body.
-      raw.sticker?.emoji ??
+      // delivery that lost its body. The emoji itself is optional, so fall
+      // back to the sticker set's name, then to a plain label — never empty.
+      (raw.sticker
+        ? (raw.sticker.emoji ?? raw.sticker.set_name ?? "sticker")
+        : undefined) ??
       (raw.rich_message ? richMessageToText(raw.rich_message) : "");
     const entities = raw.entities ?? raw.caption_entities ?? [];
     const text = content?.text
@@ -2320,7 +2325,9 @@ export class TelegramAdapter
       );
     }
 
-    if (raw.document) {
+    // When a message carries an animation, Telegram also sets `document` for
+    // backward compatibility — it's the same file, so don't report it twice.
+    if (raw.document && !raw.animation) {
       attachments.push(
         this.createAttachment("file", raw.document.file_id, {
           size: raw.document.file_size,
@@ -2356,16 +2363,16 @@ export class TelegramAdapter
       );
     }
 
-    // Stickers are images (WebP, or WebM/TGS when animated). They arrive with
-    // no text at all, so without this a sticker reaches the handler as an
-    // empty message; the emoji it stands for becomes the message text.
+    // A still sticker is a WebP image; a video sticker is WebM and a Lottie
+    // one the TGS container, neither of which renders as an image.
     if (raw.sticker) {
+      const format = stickerAttachmentFormat(raw.sticker);
       attachments.push(
-        this.createAttachment("image", raw.sticker.file_id, {
+        this.createAttachment(format.type, raw.sticker.file_id, {
           size: raw.sticker.file_size,
           width: raw.sticker.width,
           height: raw.sticker.height,
-          mimeType: stickerMimeType(raw.sticker),
+          mimeType: format.mimeType,
           fileUniqueId: raw.sticker.file_unique_id,
         })
       );

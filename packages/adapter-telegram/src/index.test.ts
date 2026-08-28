@@ -6494,7 +6494,7 @@ describe("mentionOnReply", () => {
 });
 
 describe("sticker messages", () => {
-  it("represents a sticker by the emoji it stands for", async () => {
+  async function parseText(overrides: Partial<TelegramMessage>) {
     mockFetch.mockResolvedValue(
       telegramOk({
         id: 8981792219,
@@ -6522,14 +6522,7 @@ describe("sticker messages", () => {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           update_id: 1,
-          message: sampleMessage({
-            text: undefined,
-            sticker: {
-              emoji: "😀",
-              file_id: "sticker-file",
-              file_unique_id: "sticker-unique",
-            },
-          }),
+          message: sampleMessage({ text: undefined, ...overrides }),
         }),
       })
     );
@@ -6538,7 +6531,42 @@ describe("sticker messages", () => {
     const call = processMessage.mock.calls[0] as
       | [unknown, string, { text?: string }]
       | undefined;
-    expect(call?.[2]?.text).toBe("😀");
+    return call?.[2]?.text;
+  }
+
+  it("represents a sticker by the emoji it stands for", async () => {
+    const text = await parseText({
+      sticker: {
+        emoji: "😀",
+        file_id: "sticker-file",
+        file_unique_id: "sticker-unique",
+      },
+    });
+
+    expect(text).toBe("😀");
+  });
+
+  it("falls back to the set name when the emoji is missing", async () => {
+    const text = await parseText({
+      sticker: {
+        set_name: "CorgiPack",
+        file_id: "sticker-file",
+        file_unique_id: "sticker-unique",
+      },
+    });
+
+    expect(text).toBe("CorgiPack");
+  });
+
+  it("never delivers a sticker as an empty message", async () => {
+    const text = await parseText({
+      sticker: {
+        file_id: "sticker-file",
+        file_unique_id: "sticker-unique",
+      },
+    });
+
+    expect(text).toBe("sticker");
   });
 });
 
@@ -6603,7 +6631,7 @@ describe("sticker and animation attachments", () => {
     expect(attachments[0]?.mimeType).toBe("image/webp");
   });
 
-  it("labels a video sticker by its real format", async () => {
+  it("carries a video sticker through as a video", async () => {
     const attachments = await parseMedia({
       sticker: {
         emoji: "🔥",
@@ -6613,12 +6641,37 @@ describe("sticker and animation attachments", () => {
       },
     });
 
+    expect(attachments).toHaveLength(1);
+    expect(attachments[0]?.type).toBe("video");
     expect(attachments[0]?.mimeType).toBe("video/webm");
   });
 
-  it("carries an animation through as a video", async () => {
+  it("carries a Lottie sticker through as a file", async () => {
+    const attachments = await parseMedia({
+      sticker: {
+        emoji: "🎉",
+        file_id: "sticker-file",
+        file_unique_id: "sticker-unique",
+        is_animated: true,
+      },
+    });
+
+    expect(attachments).toHaveLength(1);
+    expect(attachments[0]?.type).toBe("file");
+    expect(attachments[0]?.mimeType).toBe("application/x-tgsticker");
+  });
+
+  it("carries an animation through as a single video attachment", async () => {
+    // Telegram sets `document` alongside `animation` for backward
+    // compatibility — the same file must not surface twice.
     const attachments = await parseMedia({
       animation: {
+        file_id: "animation-file",
+        file_unique_id: "animation-unique",
+        mime_type: "video/mp4",
+        file_name: "cat.mp4",
+      },
+      document: {
         file_id: "animation-file",
         file_unique_id: "animation-unique",
         mime_type: "video/mp4",
@@ -6629,5 +6682,20 @@ describe("sticker and animation attachments", () => {
     expect(attachments).toHaveLength(1);
     expect(attachments[0]?.type).toBe("video");
     expect(attachments[0]?.mimeType).toBe("video/mp4");
+  });
+
+  it("still carries a plain document through as a file", async () => {
+    const attachments = await parseMedia({
+      document: {
+        file_id: "document-file",
+        file_unique_id: "document-unique",
+        mime_type: "application/pdf",
+        file_name: "report.pdf",
+      },
+    });
+
+    expect(attachments).toHaveLength(1);
+    expect(attachments[0]?.type).toBe("file");
+    expect(attachments[0]?.mimeType).toBe("application/pdf");
   });
 });
